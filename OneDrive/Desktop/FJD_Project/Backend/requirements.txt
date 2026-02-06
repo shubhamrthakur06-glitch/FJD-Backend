@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+tensorflow-cpu
+numpy
+pandas
+requests
+Pillow
+firebase-admin
+python-Levenshtein
+dnspython
+email-validator
