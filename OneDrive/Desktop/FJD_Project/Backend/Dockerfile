@@ -1,21 +1,21 @@
-# 1. Use a Python Image as the base
-FROM python:3.9-slim
+# 1. Use Python 3.11 (Better compatibility with TensorFlow 2.x)
+FROM python:3.11-slim
 
-# 2. Install Tesseract (The Linux way)
-RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    libtesseract-dev \
-    && rm -rf /var/lib/apt/lists/*
+# 2. Set environment variables to keep Python clean
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 # 3. Set up the working directory
 WORKDIR /app
 
-# 4. Copy the files and install Python libraries
+# 4. Copy requirements first (Docker caching layer)
 COPY requirements.txt .
+
+# 5. Install libraries (No Cache to save space)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Copy the rest of the code
+# 6. Copy the rest of the code (including the .h5 Brain)
 COPY . .
 
-# 6. Run the server
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# 7. Run the server (Uses the PORT environment variable provided by Render)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
