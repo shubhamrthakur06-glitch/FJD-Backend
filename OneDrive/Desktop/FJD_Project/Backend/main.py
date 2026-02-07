@@ -134,28 +134,44 @@ async def analyze_image(file: UploadFile = File(...)):
     if is_fatal_keyword:
         reasons.append(f"🚩 Fatal Keyword: '{trigger}'")
 
-    # 5. IDENTITY CHECK
+    # 5. IDENTITY ANALYSIS (The Detective)
     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', extracted_text)
-    email_score = 100
+    
+    # 🛑 FIX: Default to 50 (Neutral), NOT 100 (Trusted)
+    # If there is no email, we shouldn't vouch for them.
+    email_score = 50 
+    email_verdict = "N/A"
+    
     if email_match:
         found_email = email_match.group(0)
-        email_score, email_reasons, _ = email_validator.validate(found_email, extracted_text)
-        if email_score < 80: reasons.extend(email_reasons)
-        elif email_score == 100: reasons.append(f"✅ Verified Sender: {found_email}")
+        email_score, email_reasons, email_verdict = email_validator.validate(found_email, extracted_text)
+        
+        if email_score < 80:
+            reasons.extend(email_reasons)
+        elif email_score == 100:
+            reasons.append(f"✅ Verified Sender: {found_email}")
+    else:
+        # If no email is found, we don't add reasons, but we keep score at 50
+        pass 
 
-    # 6. FINAL SCORING (The Protocol)
+    # 5. THE VETO PROTOCOL (Combining Scores)
     final_score = text_score
     
-    # Logic: If Identity is FAKE, score is 100%
+    # Rule 1: The "Wolf" (Text Safe, Email Fake)
     if email_score == 0:
         final_score = 100
-        reasons.insert(0, "🚨 IDENTITY ALERT: Fake/Free Email Address.")
+        reasons.insert(0, "🚨 IDENTITY ALERT: Fake/Free Email Address detected.")
+        
+    # Rule 2: The "Sus" (Text Risky, Email Bad)
     elif email_score < 50 and text_score > 50:
         final_score = 100
         reasons.insert(0, "🚨 DOUBLE THREAT: Suspicious Text + Unverified Email.")
-    elif email_score >= 80 and text_score > 60:
-        final_score = text_score - 20 # Shield
-        reasons.append("🛡️ Trusted Sender lowers risk.")
+        
+    # Rule 3: The "Verified" (Text Risky, Email Real)
+    # 🛑 FIX: Only shield if score is strictly GREATER than 80 (Verified)
+    elif email_score > 80 and text_score > 60:
+        final_score = text_score - 20 
+        reasons.append("🛡️ IDENTITY SHIELD: Verified Sender lowers risk.")
         
     if is_fatal_keyword: final_score = 100
 
