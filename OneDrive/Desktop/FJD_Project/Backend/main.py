@@ -10,6 +10,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from PIL import Image
+from pypdf import PdfReader
+import docx
 import firebase_admin
 from firebase_admin import credentials, firestore
 from email_validator import EmailValidator
@@ -39,7 +41,7 @@ app = FastAPI()
 model = None
 tokenizer = None
 
-print("🧠 Booting Neural Network...")
+print("🧠 Booting Universal Neural Network...")
 try:
     model = tf.keras.models.load_model(BRAIN_PATH)
     with open(TOKENIZER_PATH, 'rb') as handle:
@@ -50,7 +52,7 @@ except Exception as e:
 
 email_validator = EmailValidator() 
 
-# --- HELPER: VETO KEYWORDS (The Fail-Safe) ---
+# --- HELPER: VETO KEYWORDS ---
 FATAL_KEYWORDS = [
     "pay for gate pass", "pay for id card", "pay for laptop",
     "deposit for verification", "money for uniform", "security deposit",
@@ -73,7 +75,7 @@ def check_veto(text):
                 return True, fatal
     return False, None
 
-# --- HELPER: GEMINI OCR ---
+# --- HELPER: GEMINI OCR (Images) ---
 def raw_gemini_ocr(image_bytes):
     if not GOOGLE_API_KEY: return None
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
@@ -91,89 +93,121 @@ def raw_gemini_ocr(image_bytes):
         except: continue
     return None
 
+# --- NEW HELPER: UNIVERSAL TEXT EXTRACTOR ---
+async def extract_text_from_file(file: UploadFile):
+    filename = file.filename.lower()
+    content = ""
+    
+    try:
+        # 1. IMAGES (JPG, PNG, JPEG)
+        if filename.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+            print("📷 Detected Image File")
+            contents = await file.read()
+            # Convert to RGB to be safe
+            image = Image.open(io.BytesIO(contents)).convert('RGB')
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='JPEG')
+            return raw_gemini_ocr(img_byte_arr.getvalue())
+
+        # 2. PDF DOCUMENTS
+        elif filename.endswith('.pdf'):
+            print("📄 Detected PDF Document")
+            contents = await file.read()
+            pdf_reader = PdfReader(io.BytesIO(contents))
+            for page in pdf_reader.pages:
+                text = page.extract_text()
+                if text: content += text + "\n"
+            return content
+
+        # 3. WORD DOCUMENTS (.docx)
+        elif filename.endswith('.docx'):
+            print("📝 Detected Word Document")
+            contents = await file.read()
+            doc = docx.Document(io.BytesIO(contents))
+            for para in doc.paragraphs:
+                content += para.text + "\n"
+            return content
+            
+        # 4. TEXT FILES (.txt)
+        elif filename.endswith('.txt'):
+            print("📜 Detected Text File")
+            contents = await file.read()
+            return contents.decode('utf-8')
+            
+    except Exception as e:
+        print(f"❌ Extraction Error: {e}")
+        return None
+    
+    return content if content else None
+
 # --- MAIN API ENDPOINT ---
 @app.post("/analyze")
-async def analyze_image(file: UploadFile = File(...)):
-    print(f"📥 Received Image: {file.filename}")
+async def analyze_evidence(file: UploadFile = File(...)):
+    print(f"📥 Received Evidence: {file.filename}")
     reasons = []
     
-    # 1. READ IMAGE
-    try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert('RGB')
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='JPEG')
-        image_bytes = img_byte_arr.getvalue()
-    except:
-        return {"score": 0, "label": "ERROR", "color": "GRAY", "extracted_text": "", "reasons": ["Image corrupt"]}
-
-    # 2. EXTRACT TEXT
-    extracted_text = raw_gemini_ocr(image_bytes)
+    # 1. EXTRACT TEXT (Universal)
+    extracted_text = await extract_text_from_file(file)
+    
     if not extracted_text:
-        return {"score": 0, "label": "OCR ERROR", "color": "GRAY", "extracted_text": "", "reasons": ["Text unreadable"]}
+        return {"score": 0, "label": "UNREADABLE", "color": "GRAY", "extracted_text": "", "reasons": ["File format not supported or empty."]}
 
-    print(f"📝 Extracted: {extracted_text[:50]}...")
+    print(f"📝 Extracted ({len(extracted_text)} chars): {extracted_text[:100]}...")
+
+    # 2. LINK SCANNER (New!)
+    # Find links like http://bit.ly/scam or www.fake-job.com
+    urls = re.findall(r'(https?://\S+|www\.\S+)', extracted_text)
+    if urls:
+        print(f"🔗 Found {len(urls)} links in document.")
+        # We append links to the text so the AI notices them explicitly
+        extracted_text += " " + " ".join(urls)
 
     # 3. DEEP LEARNING ANALYSIS
     text_score = 0
     if model and tokenizer:
         try:
-            # Convert text to numbers
             seq = tokenizer.texts_to_sequences([extracted_text])
             padded = pad_sequences(seq, maxlen=MAX_LENGTH, padding=PADDING_TYPE, truncating=TRUNC_TYPE)
-            # Predict
             prediction = model.predict(padded, verbose=0)[0][0]
             text_score = round(float(prediction) * 100, 2)
             print(f"🧠 Deep Learning Score: {text_score}%")
         except Exception as e:
             print(f"⚠️ Model Error: {e}")
-            text_score = 50 # Fallback
+            text_score = 50 
 
     # 4. VETO CHECK
     is_fatal_keyword, trigger = check_veto(extracted_text)
     if is_fatal_keyword:
         reasons.append(f"🚩 Fatal Keyword: '{trigger}'")
 
-    # 5. IDENTITY ANALYSIS (The Detective)
-    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', extracted_text)
-    
-    # 🛑 FIX: Default to 50 (Neutral), NOT 100 (Trusted)
-    # If there is no email, we shouldn't vouch for them.
+    # 5. IDENTITY CHECK
+    # Fix: Default to 50 (Neutral) if no email found
     email_score = 50 
-    email_verdict = "N/A"
-    
+    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', extracted_text)
     if email_match:
         found_email = email_match.group(0)
-        email_score, email_reasons, email_verdict = email_validator.validate(found_email, extracted_text)
-        
-        if email_score < 80:
-            reasons.extend(email_reasons)
-        elif email_score == 100:
-            reasons.append(f"✅ Verified Sender: {found_email}")
-    else:
-        # If no email is found, we don't add reasons, but we keep score at 50
-        pass 
+        email_score, email_reasons, _ = email_validator.validate(found_email, extracted_text)
+        if email_score < 80: reasons.extend(email_reasons)
+        elif email_score == 100: reasons.append(f"✅ Verified Sender: {found_email}")
 
-    # 5. THE VETO PROTOCOL (Combining Scores)
+    # 6. FINAL SCORING
     final_score = text_score
     
-    # Rule 1: The "Wolf" (Text Safe, Email Fake)
     if email_score == 0:
         final_score = 100
-        reasons.insert(0, "🚨 IDENTITY ALERT: Fake/Free Email Address detected.")
-        
-    # Rule 2: The "Sus" (Text Risky, Email Bad)
+        reasons.insert(0, "🚨 IDENTITY ALERT: Fake/Free Email Address.")
     elif email_score < 50 and text_score > 50:
         final_score = 100
         reasons.insert(0, "🚨 DOUBLE THREAT: Suspicious Text + Unverified Email.")
-        
-    # Rule 3: The "Verified" (Text Risky, Email Real)
-    # 🛑 FIX: Only shield if score is strictly GREATER than 80 (Verified)
     elif email_score > 80 and text_score > 60:
         final_score = text_score - 20 
-        reasons.append("🛡️ IDENTITY SHIELD: Verified Sender lowers risk.")
+        reasons.append("🛡️ Trusted Sender lowers risk.")
         
     if is_fatal_keyword: final_score = 100
+    
+    # URL Penalty: If AI is suspicious AND there are links, boost risk
+    if text_score > 70 and urls:
+        reasons.append("⚠️ Suspicious links detected in document.")
 
     final_score = max(0, min(100, final_score))
     
@@ -191,7 +225,7 @@ async def analyze_image(file: UploadFile = File(...)):
     try:
         db.collection("scam_reports").add({
             "text": extracted_text, "score": final_score, "reasons": reasons, 
-            "timestamp": firestore.SERVER_TIMESTAMP
+            "filename": file.filename, "timestamp": firestore.SERVER_TIMESTAMP
         })
     except: pass
 

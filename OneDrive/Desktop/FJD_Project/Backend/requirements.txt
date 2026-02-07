@@ -10,3 +10,5 @@ firebase-admin
 python-Levenshtein
 dnspython
 email-validator
+pypdf
+python-docx
