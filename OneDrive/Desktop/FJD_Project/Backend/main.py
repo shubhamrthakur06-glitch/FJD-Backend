@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form
 import os
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0' # Silence warnings
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0' 
 import io
 import base64
 import requests
@@ -16,6 +16,7 @@ import docx
 import firebase_admin
 from firebase_admin import credentials, firestore
 from email_validator import EmailValidator
+from bs4 import BeautifulSoup # <--- NEW RECON TOOL
 
 # --- CONFIGURATION ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -23,7 +24,6 @@ BRAIN_PATH = "fjd_deep_brain.h5"
 TOKENIZER_PATH = "tokenizer.pickle"
 PHISHTANK_PATH = "phishtank_urls.csv"
 
-# Deep Learning Constants
 MAX_LENGTH = 120
 TRUNC_TYPE = 'post'
 PADDING_TYPE = 'post'
@@ -44,9 +44,8 @@ model = None
 tokenizer = None
 phish_blacklist = set()
 
-print("🧠 Booting Forensic Engine...")
+print("🧠 Booting Forensic Engine (with Active Recon)...")
 
-# 1. Load Brain
 try:
     model = tf.keras.models.load_model(BRAIN_PATH)
     with open(TOKENIZER_PATH, 'rb') as handle:
@@ -55,18 +54,13 @@ try:
 except Exception as e:
     print(f"❌ CRITICAL ERROR LOADING BRAIN: {e}")
 
-# 2. Load PhishTank (Blacklist)
 if os.path.exists(PHISHTANK_PATH):
     try:
         df = pd.read_csv(PHISHTANK_PATH)
-        # Assuming column 'text' or 'url' holds the link
         target_col = 'text' if 'text' in df.columns else 'url'
         phish_blacklist = set(df[target_col].astype(str).str.lower())
-        print(f"✅ PhishTank Loaded: {len(phish_blacklist)} known threats.")
     except Exception as e:
-        print(f"⚠️ PhishTank Load Failed: {e}")
-else:
-    print("⚠️ PhishTank CSV not found. Link blacklist disabled.")
+        pass
 
 email_validator = EmailValidator() 
 
@@ -111,10 +105,9 @@ async def extract_text_from_file(file: UploadFile):
         elif filename.endswith('.txt'):
             return contents.decode('utf-8')
     except Exception as e:
-        print(f"❌ File Error ({filename}): {e}")
+        print(f"❌ File Error: {e}")
     return content
 
-# --- HELPER: AI PREDICTION ---
 def get_ai_score(text):
     if not text or not model or not tokenizer: return 0
     try:
@@ -125,54 +118,101 @@ def get_ai_score(text):
     except:
         return 50
 
-# --- MAIN ENDPOINT: TRIPLE THREAT ANALYSIS ---
+# --- NEW: ACTIVE LINK RECON ---
+def active_link_recon(url):
+    """Visits the URL, scrapes the content, and returns extracted text."""
+    try:
+        # Pretend to be an iPhone to bypass basic bot-blockers
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1'
+        }
+        print(f"🕵️‍♂️ Deploying Active Recon on: {url}")
+        
+        # Timeout after 5 seconds so the app doesn't freeze forever
+        response = requests.get(url, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Extract the Title
+            title = soup.title.string if soup.title else ""
+            
+            # Extract paragraphs
+            paragraphs = soup.find_all('p')
+            body_text = " ".join([p.get_text() for p in paragraphs])
+            
+            # Combine it
+            scraped_text = f"Website Title: {title}. Content: {body_text}"
+            
+            # Clean up whitespace
+            scraped_text = " ".join(scraped_text.split())
+            
+            print(f"✅ Recon Successful. Extracted {len(scraped_text)} characters.")
+            return scraped_text[:1000] # Return first 1000 chars to avoid overloading the Brain
+        else:
+            print(f"⚠️ Recon Failed. Site returned status: {response.status_code}")
+            return f"Error: Site returned status {response.status_code}"
+            
+    except Exception as e:
+        print(f"❌ Recon Failed (Site down or blocked): {e}")
+        return "Error: Could not reach the website."
+
+# --- MAIN ENDPOINT ---
 @app.post("/analyze")
 async def analyze_evidence(
     image: UploadFile = File(None), 
     document: UploadFile = File(None), 
     link: str = Form(None)
 ):
-    print(f"📥 Received Evidence - Image: {image is not None}, Doc: {document is not None}, Link: {link is not None}")
-    
+    print("📥 Commencing Triple-Threat Analysis...")
     reasons = []
     combined_text = ""
     
-    # --- TRACK 1: LINK ANALYSIS ---
+    # --- TRACK 1: THE RECON TRACK (LINK) ---
     link_score = 0
     if link:
-        # Check Blacklist
         clean_link = link.lower().strip()
+        
+        # 1. Check PhishTank Database
         if clean_link in phish_blacklist:
             link_score = 100
-            reasons.append(f"🚨 BLACKLIST MATCH: Link '{link}' is a known phishing site.")
+            reasons.append(f"🚨 BLACKLIST: Link '{link}' is a verified phishing site.")
         else:
-            # Check AI on the link text itself (e.g. "secure-login-update")
-            link_score = get_ai_score(link)
-            if link_score > 80:
-                reasons.append("⚠️ Suspicious URL pattern detected.")
-        
-        combined_text += f" {link}"
+            # 2. Deploy Active Recon
+            scraped_content = active_link_recon(link)
+            
+            if "Error:" in scraped_content:
+                reasons.append("⚠️ SUSPICIOUS LINK: The provided website is offline or blocking forensic analysis.")
+                # We bump the score slightly if the site is hiding
+                link_score = 60 
+            else:
+                # 3. Feed the Scraped HTML directly to the Brain
+                link_score = get_ai_score(scraped_content)
+                if link_score > 80:
+                    reasons.append("🚨 ACTIVE RECON: The website's hidden content matches known scam profiles.")
+                elif link_score < 40:
+                    reasons.append("✅ ACTIVE RECON: The website's content appears legitimate.")
+                
+                # Add the scraped text to the combined evidence pile
+                combined_text += f" [Scraped from Link: {scraped_content}] "
 
-    # --- TRACK 2: DOCUMENT ANALYSIS ---
+    # --- TRACK 2: DOCUMENT ---
     doc_text = await extract_text_from_file(document)
     doc_score = get_ai_score(doc_text)
     if doc_text:
-        combined_text += f" {doc_text}"
-        if doc_score > 80: reasons.append("📄 Document contains high-risk scam vocabulary.")
+        combined_text += f" [Doc: {doc_text}] "
+        if doc_score > 80: reasons.append("📄 Deep Scan: Document contains high-risk scam vocabulary.")
 
-    # --- TRACK 3: IMAGE ANALYSIS ---
+    # --- TRACK 3: IMAGE ---
     img_text = await extract_text_from_file(image)
     img_score = get_ai_score(img_text)
     if img_text:
-        combined_text += f" {img_text}"
-        if img_score > 80: reasons.append("📷 Screenshot contains high-risk scam vocabulary.")
+        combined_text += f" [Image: {img_text}] "
+        if img_score > 80: reasons.append("📷 Deep Scan: Screenshot contains high-risk scam vocabulary.")
 
-    # --- AGGREGATION LOGIC (THE JURY) ---
-    
-    # 1. The "Poison Drop" Rule: Max score wins
+    # --- THE JURY (Aggregation) ---
     final_score = max(link_score, doc_score, img_score)
     
-    # 2. Identity Check (on combined text)
     email_score = 50 
     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', combined_text)
     if email_match:
@@ -180,18 +220,15 @@ async def analyze_evidence(
         email_score, email_reasons, _ = email_validator.validate(found_email, combined_text)
         if email_score < 80: 
             reasons.extend(email_reasons)
-            # If identity is fake, force score to 100
             if final_score < 100:
                 final_score = 100
-                reasons.append("🚨 IDENTITY ALERT: Fake/Free Email Address Overrides Safe Text.")
+                reasons.append("🚨 IDENTITY: Fake/Free Email Address Overrides Safe Text.")
         elif email_score == 100: 
-            reasons.append(f"✅ Verified Sender: {found_email}")
-            # Identity Shield (Only lowers score if text isn't CRITICAL)
+            reasons.append(f"✅ IDENTITY: Verified Sender ({found_email})")
             if final_score < 90: 
                 final_score = max(0, final_score - 20)
-                reasons.append("🛡️ Trusted Sender lowers risk.")
+                reasons.append("🛡️ Trusted Sender lowers overall risk.")
 
-    # 3. Confidence Calculation
     evidence_count = sum([1 for x in [image, document, link] if x is not None])
     confidence_level = "LOW"
     if evidence_count == 3: confidence_level = "EXTREME"
@@ -202,23 +239,14 @@ async def analyze_evidence(
         if not reasons: reasons.append(f"AI Brain detected scam patterns (Confidence: {confidence_level}).")
     elif final_score > 40:
         label, color = "MODERATE", "YELLOW"
-        reasons.append(f"Analysis is inconclusive. More evidence recommended (Confidence: {confidence_level}).")
+        reasons.append(f"Analysis is inconclusive. (Confidence: {confidence_level}).")
     else:
         label, color = "SAFE JOB", "GREEN"
-        reasons.append(f"No active threats detected in provided evidence (Confidence: {confidence_level}).")
-
-    # 4. Save to DB
-    try:
-        db.collection("scam_reports").add({
-            "score": final_score, "reasons": reasons, "confidence": confidence_level,
-            "has_image": image is not None, "has_doc": document is not None, "has_link": link is not None,
-            "timestamp": firestore.SERVER_TIMESTAMP
-        })
-    except: pass
+        reasons.append(f"No active threats detected. (Confidence: {confidence_level}).")
 
     return {
         "score": int(final_score), "label": label, "color": color,
-        "extracted_text": combined_text[:200] + "...", 
+        "extracted_text": combined_text[:300] + "...", 
         "reasons": reasons,
         "confidence": confidence_level
     }

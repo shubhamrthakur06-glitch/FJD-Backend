@@ -12,3 +12,4 @@ dnspython
 email-validator
 pypdf
 python-docx
+beautifulsoup4
