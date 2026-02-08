@@ -42,6 +42,27 @@ db = firestore.client()
 
 app = FastAPI()
 
+# 🛑 FATAL KEYWORDS (The "Hard Kill" List)
+# If any of these appear, it is AUTOMATICALLY a scam.
+FATAL_PATTERNS = [
+    r"security\s?deposit",
+    r"gate\s?pass",
+    r"id\s?card\s?generation",
+    r"refundable\s?fee",
+    r"pay\s?for\s?training",
+    r"money\s?for\s?laptop",
+    r"bank\s?details.*salary",
+    r"usdt",
+    r"crypto",
+    r"telegram",
+    r"whatsapp",
+    r"verify\s?your\s?identity",
+    r"account\s?termination",
+    r"suspend.*account",
+    r"liking\s?youtube\s?videos",
+    r"task\s?scam"
+]
+
 # --- LOAD RESOURCES ---
 model = None
 tokenizer = None
@@ -173,6 +194,14 @@ def get_ai_score(text):
         return round(float(prediction) * 100, 2)
     except: return 50
 
+def check_fatal_keywords(text):
+    if not text: return None
+    text_lower = text.lower()
+    for pattern in FATAL_PATTERNS:
+        if re.search(pattern, text_lower):
+            return f"🚨 RED FLAG DETECTED: Found suspicious term matching '{pattern.replace(r'', '').replace(r's?', '')}'."
+    return None
+
 # --- MAIN ENDPOINT ---
 @app.post("/analyze")
 async def analyze_evidence(
@@ -234,6 +263,13 @@ async def analyze_evidence(
 
     # --- FINAL SCORING ---
     final_score = max(link_score, get_ai_score(combined_text))
+
+    # 🛑 VETO CHECK (The Safety Net)
+    fatal_reason = check_fatal_keywords(combined_text)
+    if fatal_reason:
+        final_score = 100
+        reasons.insert(0, fatal_reason) # Add to TOP of reasons
+        print(f"🚫 VETO TRIGGERED: {fatal_reason}")
     
     # Identity & Whitelist Logic
     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', combined_text)
