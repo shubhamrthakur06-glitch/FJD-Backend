@@ -168,21 +168,33 @@ async def extract_text_from_file(file: UploadFile):
     content = ""
     try:
         contents = await file.read()
+        
+        # 1. IMAGES
         if filename.endswith(('.jpg', '.jpeg', '.png', '.webp')):
             image = Image.open(io.BytesIO(contents)).convert('RGB')
             img_byte_arr = io.BytesIO()
             image.save(img_byte_arr, format='JPEG')
             return raw_gemini_ocr(img_byte_arr.getvalue()) or ""
+            
+        # 2. PDF
         elif filename.endswith('.pdf'):
             pdf_reader = PdfReader(io.BytesIO(contents))
             for page in pdf_reader.pages:
                 text = page.extract_text()
                 if text: content += text + "\n"
+                
+        # 3. WORD DOCS
         elif filename.endswith('.docx'):
             doc = docx.Document(io.BytesIO(contents))
             for para in doc.paragraphs:
                 content += para.text + "\n"
-    except: pass
+                
+        # 4. TEXT FILES (THIS WAS MISSING!) 🚨
+        elif filename.endswith('.txt'):
+            return contents.decode('utf-8')
+            
+    except Exception as e:
+        print(f"❌ File Error: {e}")
     return content
 
 def get_ai_score(text):
