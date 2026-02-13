@@ -60,7 +60,20 @@ FATAL_PATTERNS = [
     r"account\s?termination",
     r"suspend.*account",
     r"liking\s?youtube\s?videos",
-    r"task\s?scam"
+    r"task\s?scam",
+    r"work\s?from\s?bed",       
+    r"no\s?experience\s?needed",
+    r"daily\s?pay",             
+    r"weekly\s?salary",         
+    r"start\s?earning\s?immediately", 
+    r"kindly\s?deposit"r"server\s?maintenance",
+    r"high\s?traffic.*server",
+    r"backup\s?portal",
+    r"secure\s?line",
+    r"avoid\s?hackers",
+    r"different\s?link",
+    r"private\s?server",
+    r"interview\s?portal"
 ]
 
 # --- LOAD RESOURCES ---
@@ -214,6 +227,33 @@ def check_fatal_keywords(text):
             return f"🚨 RED FLAG DETECTED: Found suspicious term matching '{pattern.replace(r'', '').replace(r's?', '')}'."
     return None
 
+def check_brand_mismatch(text, link):
+    if not link: return None
+    
+    # 1. Define the Titans (Brand -> Official Domain)
+    # We only enforce this for the giants where we are 100% sure.
+    OFFICIAL_DOMAINS = {
+        "google": "google.com",
+        "amazon": "amazon.com",
+        "microsoft": "microsoft.com",
+        "linkedin": "linkedin.com",
+        "netflix": "netflix.com",
+        "facebook": "meta.com",
+        "instagram": "instagram.com",
+        "whatsapp": "whatsapp.com"
+    }
+    
+    link_domain = urlparse(link).netloc.lower()
+    text_lower = text.lower()
+    
+    for brand, official_domain in OFFICIAL_DOMAINS.items():
+        # If the text explicitly claims to be this brand...
+        if f"{brand}" in text_lower:
+            # ...but the link is NOT their official domain (and not a subdomain like careers.google.com)
+            if official_domain not in link_domain:
+                return f"🚨 IMPERSONATION ALERT: Text claims to be '{brand.title()}', but link is '{link_domain}' (not {official_domain})."
+    return None
+
 # --- MAIN ENDPOINT ---
 @app.post("/analyze")
 async def analyze_evidence(
@@ -281,8 +321,26 @@ async def analyze_evidence(
     if fatal_reason:
         final_score = 100
         reasons.insert(0, fatal_reason) # Add to TOP of reasons
-        print(f"🚫 VETO TRIGGERED: {fatal_reason}")
+        
+    is_trusted_source = False
+    if link and active_link_recon(link) == "TRUSTED_DOMAIN_OVERRIDE":
+        is_trusted_source = True
+
+    if is_trusted_source and not fatal_reason:
+        # If score is high but source is trusted, we doubt the AI.
+        if final_score > 60:
+            print(f"🛡️ TRUST SHIELD ACTIVATED: Lowering score from {final_score} to 20.")
+            final_score = 20
+            reasons.append("✅ VERIFIED SOURCE: Trusted domain overrides AI suspicion.")
+            # Remove any generic "AI detected" reasons to avoid confusion
+            reasons = [r for r in reasons if "Deep Brain" not in r and "scam vocabulary" not in r]
     
+    impersonation_reason = check_brand_mismatch(combined_text, link)
+    if impersonation_reason:
+        final_score = 100
+        reasons.insert(0, impersonation_reason)
+        print(f"🚫 BRAND MISMATCH: {impersonation_reason}")
+
     # Identity & Whitelist Logic
     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', combined_text)
     if email_match:
