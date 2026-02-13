@@ -74,6 +74,22 @@ print("="*40 + "\n")
 
 app = FastAPI()
 
+# 1. Add this import at the top
+from fastapi.middleware.cors import CORSMiddleware
+
+# ... (Keep your existing initialization code) ...
+
+app = FastAPI()
+
+# 2. INSERT THIS BLOCK RIGHT AFTER 'app = FastAPI()'
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 🟢 Allows ALL origins (Web, Mobile, Localhost)
+    allow_credentials=True,
+    allow_methods=["*"],  # 🟢 Allows ALL methods (GET, POST, etc.)
+    allow_headers=["*"],  # 🟢 Allows ALL headers
+)
+
 # 🛑 FATAL KEYWORDS (The "Hard Kill" List)
 FATAL_KEYWORDS = [
     r"kindly\s+deposit", r"send\s+a\s+check", r"purchase\s+equipment",
