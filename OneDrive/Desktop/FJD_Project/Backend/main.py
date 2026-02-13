@@ -189,7 +189,7 @@ def scan_for_keywords(text):
 
 @app.post("/analyze")
 async def analyze_evidence(
-    screenshot: UploadFile = File(None),
+    image: UploadFile = File(None),       # <--- FIXED (Matches App.js)
     link: str = Form(None),
     document: UploadFile = File(None)
 ):
@@ -202,9 +202,9 @@ async def analyze_evidence(
     combined_text = ""
 
     # --- STEP 1: PROCESS SCREENSHOT (IMAGE -> OCR -> TEXT) ---
-    if screenshot:
+    if image:                             # <--- Update this variable name too
         print("\n[INPUT 1] Processing Screenshot...")
-        content = await screenshot.read()
+        content = await image.read()      # <--- Update this too
         ocr_text = perform_ocr_with_gemini(content)
         if ocr_text:
             combined_text += ocr_text + " "
