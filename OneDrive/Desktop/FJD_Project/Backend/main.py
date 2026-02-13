@@ -295,20 +295,26 @@ async def analyze_evidence(
 
     # --- STEP 6: FINAL VERDICT GENERATION ---
     print("\n[FINALIZING] Generating Report...")
+    
+    # 1. Determine Label and Color based on Score
     if final_score > 80:
-        verdict = "HIGH RISK"
+        label = "HIGH RISK"
+        color = "RED"
     elif final_score > 40:
-        verdict = "SUSPICIOUS"
+        label = "MODERATE"
+        color = "YELLOW"
     else:
-        verdict = "SAFE"
+        label = "SAFE JOB"
+        color = "GREEN"
 
-    print(f"🏁 FINAL SCORE: {final_score} | VERDICT: {verdict}")
+    print(f"🏁 FINAL SCORE: {final_score} | VERDICT: {label}")
     print("="*40 + "\n")
 
-    # Return JSON formatted for the React Native Frontend
+    # 2. Return JSON exactly matching App.js expectations
     return {
-        "risk_score": final_score,
-        "verdict": verdict,
-        "reasons": reasons,
-        "raw_text_analyzed": combined_text[:150] + "..." if combined_text else "No readable text found."
+        "score": int(final_score),       # ✅ Matches result.score
+        "label": label,                  # ✅ Matches result.label
+        "color": color,                  # ✅ Matches result.color
+        "reasons": reasons,              # ✅ Matches result.reasons
+        "extracted_text": combined_text[:200] + "..." if combined_text else "No readable text found." # ✅ Matches result.extracted_text
     }
