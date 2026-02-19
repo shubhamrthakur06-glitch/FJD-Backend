@@ -4,6 +4,9 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool # 🟢 NEW: Prevents server freezing
+import asyncio                                    # 🟢 NEW: Asynchronous time delays
 import io
 import re
 import pickle
@@ -74,20 +77,12 @@ print("="*40 + "\n")
 
 app = FastAPI()
 
-# 1. Add this import at the top
-from fastapi.middleware.cors import CORSMiddleware
-
-# ... (Keep your existing initialization code) ...
-
-app = FastAPI()
-
-# 2. INSERT THIS BLOCK RIGHT AFTER 'app = FastAPI()'
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 🟢 Allows ALL origins (Web, Mobile, Localhost)
+    allow_origins=["*"],  
     allow_credentials=True,
-    allow_methods=["*"],  # 🟢 Allows ALL methods (GET, POST, etc.)
-    allow_headers=["*"],  # 🟢 Allows ALL headers
+    allow_methods=["*"],  
+    allow_headers=["*"],  
 )
 
 # 🛑 FATAL KEYWORDS (The "Hard Kill" List)
@@ -108,6 +103,12 @@ WHITELIST_CONTEXT = [
     "checkr", "sterling", "hireright", "id.me",
     "background check", "pre-employment screening"
 ]
+
+# --- WAKE UP ENDPOINT (NEW) ---
+@app.get("/ping")
+def ping_server():
+    """Lightweight endpoint to wake up the Render server from cold start."""
+    return {"status": "awake", "time": time.strftime('%H:%M:%S')}
 
 # --- HELPER FUNCTIONS ---
 
@@ -137,22 +138,20 @@ def extract_text_from_file(file_bytes, filename):
         print(f"❌ Document Extraction Failed: {e}")
         return ""
 
-def perform_ocr_with_gemini(image_bytes):
-    """
-    Attempts OCR with Gemini 2.5 -> 2.0 -> 1.5 Flash.
-    """
+async def perform_ocr_with_gemini(image_bytes): # 🟢 NEW: Now Async
     print("👁️ INITIATING GEMINI OCR PROTOCOL...")
     image = Image.open(io.BytesIO(image_bytes))
     prompt = "Extract all readable text from this image exactly as it appears. Do not summarize."
     
-    # Models to try in order
     models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
     
     for model_name in models_to_try:
         try:
             print(f"   Attempting OCR with: {model_name}...")
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content([prompt, image])
+            
+            # 🟢 NEW: Push network call to background thread to avoid freezing
+            response = await run_in_threadpool(model.generate_content, [prompt, image])
             
             if response.text:
                 print(f"✅ OCR SUCCESS ({model_name}). Extracted {len(response.text)} characters.")
@@ -163,7 +162,7 @@ def perform_ocr_with_gemini(image_bytes):
         except Exception as e:
             print(f"❌ OCR FAILED with {model_name}: {e}")
             print("   Adding small delay before retry...")
-            time.sleep(1) # Wait a second before trying the next model
+            await asyncio.sleep(1) # 🟢 NEW: Non-blocking sleep
 
     print("❌❌ ALL GEMINI OCR ATTEMPTS FAILED.")
     return ""
@@ -178,7 +177,6 @@ def scan_for_keywords(text):
     if is_whitelisted:
         print("   🛡️ Whitelist Active: Ignoring specific suspicious triggers.")
 
-    # FATAL CHECKS
     for pattern in FATAL_KEYWORDS:
         if re.search(pattern, text):
             found = pattern.replace(r'', '').strip()
@@ -186,7 +184,6 @@ def scan_for_keywords(text):
             triggers.append(f"🚨 RED FLAG: Found '{found}'")
             return 100, triggers 
 
-    # SUSPICIOUS CHECKS
     for pattern in SUSPICIOUS_KEYWORDS:
         if re.search(pattern, text):
             if "verify" in pattern and is_whitelisted:
@@ -205,7 +202,7 @@ def scan_for_keywords(text):
 
 @app.post("/analyze")
 async def analyze_evidence(
-    image: UploadFile = File(None),       # <--- FIXED (Matches App.js)
+    image: UploadFile = File(None),       
     link: str = Form(None),
     document: UploadFile = File(None)
 ):
@@ -217,55 +214,51 @@ async def analyze_evidence(
     reasons = []
     combined_text = ""
 
-    # --- STEP 1: PROCESS SCREENSHOT (IMAGE -> OCR -> TEXT) ---
-    if image:                             # <--- Update this variable name too
+    # --- STEP 1: PROCESS SCREENSHOT ---
+    if image:                             
         print("\n[INPUT 1] Processing Screenshot...")
-        content = await image.read()      # <--- Update this too
-        ocr_text = perform_ocr_with_gemini(content)
+        content = await image.read()      
+        ocr_text = await perform_ocr_with_gemini(content) # 🟢 NEW: Added await
         if ocr_text:
             combined_text += ocr_text + " "
             reasons.append("✅ OCR successfully extracted text from screenshot.")
     else:
         print("\n[INPUT 1] No Screenshot provided.")
 
-    # --- STEP 2: PROCESS DOCUMENT (FILE -> TEXT) ---
+    # --- STEP 2: PROCESS DOCUMENT ---
     if document:
         print("\n[INPUT 3] Processing Document...")
         content = await document.read()
-        doc_text = extract_text_from_file(content, document.filename)
+        # 🟢 NEW: Run heavy document parsing in background
+        doc_text = await run_in_threadpool(extract_text_from_file, content, document.filename)
         if doc_text:
             combined_text += doc_text + " "
             reasons.append(f"✅ Extracted text from document: {document.filename}")
     else:
         print("\n[INPUT 3] No Document provided.")
 
-    # --- STEP 3: RULE-BASED ANALYSIS (ON COMBINED TEXT) ---
+    # --- STEP 3: RULE-BASED ANALYSIS ---
     print("\n[ANALYSIS] Starting Rule-Based Scan...")
     kw_score, kw_reasons = scan_for_keywords(combined_text)
     final_score = max(final_score, kw_score)
     reasons.extend(kw_reasons)
 
-    # --- STEP 4: PROCESS LINK & EMAIL (VALIDATOR LOGIC) ---
+    # --- STEP 4: PROCESS LINK & EMAIL ---
     print("\n[INPUT 2] Processing Link & Emails...")
-    
-    # A. Link Analysis (Basic)
     if link:
         print(f"   🔗 Analyzing Link: {link}")
-        # (Future: Add PhishTank lookup here)
-        # For now, we check if the link domain matches any emails found later.
 
-    # B. Email Validator
     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', combined_text)
     if email_match:
         found_email = email_match.group(0)
         print(f"   📧 Found Email Address: {found_email}")
         
-        # Pass the link as context to the validator if available
         validation_context = combined_text
         if link:
             validation_context += f" Link provided: {link}"
 
-        email_score, email_reasons, _ = email_validator.validate(found_email, validation_context)
+        # 🟢 NEW: Run DNS blocking checks in background thread
+        email_score, email_reasons, _ = await run_in_threadpool(email_validator.validate, found_email, validation_context)
         print(f"   -> Validator Score: {email_score}/100")
         
         if email_score == 0:
@@ -280,19 +273,18 @@ async def analyze_evidence(
     else:
         print("   ℹ️ No email addresses found in text.")
 
-    # --- STEP 5: AI BRAIN ANALYSIS (DEEP LEARNING) ---
+    # --- STEP 5: AI BRAIN ANALYSIS ---
     print("\n[ANALYSIS] Starting AI Brain Analysis...")
     if model and tokenizer and combined_text.strip():
-        # Preprocess
         seq = tokenizer.texts_to_sequences([combined_text])
         padded = pad_sequences(seq, maxlen=MAX_LENGTH, padding=PADDING_TYPE, truncating=TRUNC_TYPE)
         
-        # Predict
-        prediction = model.predict(padded, verbose=0)[0][0]
+        # 🟢 NEW: Run TensorFlow prediction in background to avoid freezing
+        prediction_output = await run_in_threadpool(model.predict, padded, verbose=0)
+        prediction = prediction_output[0][0]
         ai_score = int(prediction * 100)
         print(f"🧠 AI RAW SCORE: {ai_score}%")
 
-        # Fusion Logic
         if final_score >= 100:
             print("   -> Ignored AI score (Rule-Based FATAL trigger active).")
         elif ai_score > 90:
@@ -309,10 +301,9 @@ async def analyze_evidence(
     else:
         print("⚠️ Skipping AI analysis (Brain offline or empty text).")
 
-    # --- STEP 6: FINAL VERDICT GENERATION ---
+    # --- STEP 6: FINAL VERDICT ---
     print("\n[FINALIZING] Generating Report...")
     
-    # 1. Determine Label and Color based on Score
     if final_score > 80:
         label = "HIGH RISK"
         color = "RED"
@@ -326,11 +317,10 @@ async def analyze_evidence(
     print(f"🏁 FINAL SCORE: {final_score} | VERDICT: {label}")
     print("="*40 + "\n")
 
-    # 2. Return JSON exactly matching App.js expectations
     return {
-        "score": int(final_score),       # ✅ Matches result.score
-        "label": label,                  # ✅ Matches result.label
-        "color": color,                  # ✅ Matches result.color
-        "reasons": reasons,              # ✅ Matches result.reasons
-        "extracted_text": combined_text[:200] + "..." if combined_text else "No readable text found." # ✅ Matches result.extracted_text
+        "score": int(final_score),       
+        "label": label,                  
+        "color": color,                  
+        "reasons": reasons,              
+        "extracted_text": combined_text[:200] + "..." if combined_text else "No readable text found." 
     }
